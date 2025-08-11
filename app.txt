@@ -1,0 +1,1056 @@
+/**
+ * public/app.js
+ * Interactive Seating Planner — full front-end with autosave to server.
+ *
+ * Features:
+ *  - SVG-based placement of chairs & area rectangles
+ *  - Add / Move / Rotate (handle, Alt+wheel, Q/E) / Z-order
+ *  - Chair info modal (save/remove)
+ *  - Areas panel (add/edit/delete)
+ *  - Pan (Space+drag) and zoom (Ctrl/Cmd + wheel) with hit-testing preserved
+ *  - Autosave: debounced POST to /savePositions and /saveDetails
+ *  - Import/Export JSON
+ *
+ * Assumptions:
+ *  - index.html contains the elements referenced by ID (see the earlier HTML)
+ *  - Server endpoints: GET /data/position.json, GET /data/details.json, POST /savePositions, POST /saveDetails
+ */
+
+(() => {
+  /* ===========================
+     Utilities
+     =========================== */
+  const Utils = {
+    uuidv4() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    },
+    clamp(v, a, b) { return Math.max(a, Math.min(b, v)); },
+    snap(v, step) { if(!step) return v; return Math.round(v/step)*step; },
+    degToRad(d) { return d * Math.PI / 180; },
+    radToDeg(r) { return r * 180 / Math.PI; },
+    debounce(fn, wait) {
+      let t = null;
+      return (...args) => {
+        clearTimeout(t);
+        t = setTimeout(() => fn(...args), wait);
+      };
+    },
+    readFileAsText(file){ return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = e => res(e.target.result);
+      r.onerror = rej; r.readAsText(file);
+    })},
+    download(filename, text) {
+      const blob = new Blob([text], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  /* ===========================
+     Sample fallback data (if server has none)
+     =========================== */
+  const SAMPLE_POSITIONS = {
+    version: 1,
+    areas: [
+      { id: "area-1", name: "MIS", x: 120, y: 80, width: 600, height: 400, color: "#1E90FF80" },
+      { id: "area-2", name: "HR", x: 800, y: 120, width: 500, height: 350, color: "#32CD3280" }
+    ],
+    chairs: [
+      { id: "chair-1", x: 200, y: 150, rotation: 0, z: 1, areaId: "area-1" },
+      { id: "chair-2", x: 380, y: 240, rotation: 90, z: 2, areaId: null }
+    ]
+  };
+
+  const SAMPLE_DETAILS = {
+    version: 1,
+    chairs: [
+      {
+        id: "chair-1",
+        name: "Alex Santos",
+        positionTitle: "Systems Analyst",
+        pcNumber: "PC-014",
+        accessories: "Headset, Dock",
+        notes: ""
+      },
+      {
+        id: "chair-2",
+        name: "",
+        positionTitle: "",
+        pcNumber: "",
+        accessories: "",
+        notes: ""
+      }
+    ]
+  };
+
+  /* ===========================
+     State
+     =========================== */
+  const State = {
+    schemaVersion: 1,
+    positions: JSON.parse(JSON.stringify(SAMPLE_POSITIONS)),
+    details: JSON.parse(JSON.stringify(SAMPLE_DETAILS)),
+    chairImageUrl: null,
+    floorImageUrl: null,
+    defaultChairSize: { w: 64, h: 64 },
+    viewport: { scale: 1, tx: 0, ty: 0 },
+    mode: 'select', // 'select' | 'add' | 'rotate'
+    gridSnap: true,
+    selectedChairId: null,
+    hoveringChairId: null
+  };
+
+  /* ===========================
+     DOM refs (IDs must match index.html)
+     =========================== */
+  const $ = {
+    svg: document.getElementById('floorSvg'),
+    viewport: document.getElementById('viewport'),
+    floorImage: document.getElementById('floorImage'),
+    areasLayer: document.getElementById('areasLayer'),
+    chairsLayer: document.getElementById('chairsLayer'),
+    modeAddBtn: document.getElementById('modeAddBtn'),
+    modeSelectBtn: document.getElementById('modeSelectBtn'),
+    rotateModeBtn: document.getElementById('rotateModeBtn'),
+    gridSnapCheckbox: document.getElementById('gridSnap'),
+    zoomInBtn: document.getElementById('zoomIn'),
+    zoomOutBtn: document.getElementById('zoomOut'),
+    zoomResetBtn: document.getElementById('zoomReset'),
+    bringFrontBtn: document.getElementById('bringFront'),
+    sendBackBtn: document.getElementById('sendBack'),
+    clearAllBtn: document.getElementById('clearAll'),
+    addAreaBtn: document.getElementById('addAreaBtn'),
+    areasList: document.getElementById('areasList'),
+    chairsList: document.getElementById('chairsList'),
+    chairSearch: document.getElementById('chairSearch'),
+    chairModal: document.getElementById('chairModal'),
+    chairForm: document.getElementById('chairForm'),
+    modalChairId: document.getElementById('modalChairId'),
+    modalName: document.getElementById('modalName'),
+    modalPositionTitle: document.getElementById('modalPositionTitle'),
+    modalPcNumber: document.getElementById('modalPcNumber'),
+    modalAccessories: document.getElementById('modalAccessories'),
+    modalNotes: document.getElementById('modalNotes'),
+    modalArea: document.getElementById('modalArea'),
+    saveChairBtn: document.getElementById('saveChairBtn'),
+    cancelChairBtn: document.getElementById('cancelChairBtn'),
+    removeChairBtn: document.getElementById('removeChairBtn'),
+    areaModal: document.getElementById('areaModal'),
+    areaForm: document.getElementById('areaForm'),
+    areaId: document.getElementById('areaId'),
+    areaName: document.getElementById('areaName'),
+    areaX: document.getElementById('areaX'),
+    areaY: document.getElementById('areaY'),
+    areaW: document.getElementById('areaW'),
+    areaH: document.getElementById('areaH'),
+    areaColor: document.getElementById('areaColor'),
+    saveAreaBtn: document.getElementById('saveAreaBtn'),
+    cancelAreaBtn: document.getElementById('cancelAreaBtn'),
+    deleteAreaBtn: document.getElementById('deleteAreaBtn'),
+    importPositionsFile: document.getElementById('importPositionsFile'),
+    importDetailsFile: document.getElementById('importDetailsFile'),
+    replaceFloorFile: document.getElementById('replaceFloorFile'),
+    replaceChairFile: document.getElementById('replaceChairFile'),
+    exportPositionsBtn: document.getElementById('exportPositionsBtn'),
+    exportDetailsBtn: document.getElementById('exportDetailsBtn'),
+    importPositionsBtn: document.getElementById('importPositionsBtn'),
+    importDetailsBtn: document.getElementById('importDetailsBtn')
+  };
+
+  /* ===========================
+     Fallback assets (data URIs)
+     =========================== */
+  const FALLBACK_FLOOR_DATAURI = `data:image/svg+xml;utf8,${encodeURIComponent(`
+<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900'>
+  <rect width='100%' height='100%' fill='#0b2440'/>
+  <text x='50%' y='50%' fill='#9fc5ff' font-size='36' text-anchor='middle' font-family='sans-serif'>Sample Floorplan</text>
+</svg>`)}`;
+
+  const FALLBACK_CHAIR_DATAURI = `data:image/svg+xml;utf8,${encodeURIComponent(`
+<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'>
+  <rect width='100%' height='100%' rx='8' fill='#2b6cb0'/>
+  <circle cx='32' cy='24' r='10' fill='#fff'/>
+  <rect x='18' y='36' width='28' height='10' rx='4' fill='#fff'/>
+</svg>`)}`;
+
+  /* ===========================
+     Autosave: debounced send to server
+     =========================== */
+  async function sendJson(url, payload) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        console.warn('Save failed:', url, res.status);
+        return { ok: false, status: res.status };
+      }
+      return await res.json();
+    } catch (err) {
+      console.warn('Save error', err);
+      return { ok: false, message: err.message };
+    }
+  }
+
+  const autoSavePositions = Utils.debounce(() => {
+    sendJson('/savePositions', State.positions).then(r => {
+      if (!r || !r.ok) console.warn('positions save returned', r);
+    });
+  }, 500);
+
+  const autoSaveDetails = Utils.debounce(() => {
+    sendJson('/saveDetails', State.details).then(r => {
+      if (!r || !r.ok) console.warn('details save returned', r);
+    });
+  }, 500);
+
+  function markPositionsChanged() { autoSavePositions(); }
+  function markDetailsChanged() { autoSaveDetails(); }
+
+  /* ===========================
+     Initialization: load server data then render
+     =========================== */
+  async function loadInitialData() {
+    try {
+      const posRes = await fetch('/data/position.json', { cache: 'no-store' });
+      if (posRes.ok) {
+        State.positions = await posRes.json();
+      } else {
+        State.positions = SAMPLE_POSITIONS;
+      }
+    } catch (err) {
+      State.positions = SAMPLE_POSITIONS;
+    }
+    try {
+      const detRes = await fetch('/data/details.json', { cache: 'no-store' });
+      if (detRes.ok) {
+        State.details = await detRes.json();
+      } else {
+        State.details = SAMPLE_DETAILS;
+      }
+    } catch (err) {
+      State.details = SAMPLE_DETAILS;
+    }
+  }
+
+  /* ===========================
+     Apply floor image with fallback
+     =========================== */
+  function applyFloorImage(url) {
+    const img = new Image();
+    img.onload = () => {
+      $.floorImage.setAttributeNS('http://www.w3.org/1999/xlink','href', url);
+      $.floorImage.setAttribute('width', img.width);
+      $.floorImage.setAttribute('height', img.height);
+    };
+    img.onerror = () => {
+      $.floorImage.setAttributeNS('http://www.w3.org/1999/xlink','href', FALLBACK_FLOOR_DATAURI);
+      $.floorImage.setAttribute('width', 1600);
+      $.floorImage.setAttribute('height', 900);
+    };
+    img.src = url;
+  }
+
+  /* ===========================
+     Renderers: areas and chairs
+     =========================== */
+  function renderAll() {
+    renderAreas();
+    renderChairs();
+    renderAreasListUI();
+    renderChairsListUI();
+    updateViewportTransform();
+    populateModalAreaSelect();
+  }
+
+  function renderAreas() {
+    const layer = $.areasLayer;
+    while (layer.firstChild) layer.removeChild(layer.firstChild);
+    (State.positions.areas || []).forEach(area => {
+      const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+      g.setAttribute('data-area-id', area.id);
+
+      const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      rect.setAttribute('x', area.x);
+      rect.setAttribute('y', area.y);
+      rect.setAttribute('width', area.width);
+      rect.setAttribute('height', area.height);
+      rect.setAttribute('fill', area.color || '#1E90FF66');
+      rect.setAttribute('stroke', '#ffffff22');
+      rect.setAttribute('stroke-width', 1);
+      g.appendChild(rect);
+
+      const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+      txt.setAttribute('x', area.x + 6);
+      txt.setAttribute('y', area.y + 20);
+      txt.setAttribute('font-size', 16);
+      txt.setAttribute('fill', '#fff');
+      txt.textContent = area.name;
+      g.appendChild(txt);
+
+      layer.appendChild(g);
+    });
+  }
+
+  function renderChairs() {
+    const layer = $.chairsLayer;
+    while (layer.firstChild) layer.removeChild(layer.firstChild);
+
+    const chairsSorted = [...(State.positions.chairs||[])].sort((a,b) => (a.z||0)-(b.z||0));
+    chairsSorted.forEach(chair => {
+      const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+      g.classList.add('chair');
+      g.setAttribute('data-chair-id', chair.id);
+
+      const size = State.defaultChairSize;
+      const img = document.createElementNS('http://www.w3.org/2000/svg','image');
+      img.setAttributeNS('http://www.w3.org/1999/xlink','href', State.chairImageUrl || FALLBACK_CHAIR_DATAURI);
+      img.setAttribute('width', size.w);
+      img.setAttribute('height', size.h);
+      img.setAttribute('x', -size.w/2);
+      img.setAttribute('y', -size.h/2);
+      img.setAttribute('preserveAspectRatio','xMidYMid meet');
+
+      const infoBtn = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      const ibR = 8;
+      const ibOffsetX = size.w/2 - ibR - 4;
+      const ibOffsetY = -size.h/2 + ibR + 4;
+      infoBtn.setAttribute('cx', ibOffsetX);
+      infoBtn.setAttribute('cy', ibOffsetY);
+      infoBtn.setAttribute('r', ibR);
+      infoBtn.setAttribute('fill', '#0ea5e9');
+      infoBtn.setAttribute('stroke', '#002233');
+      infoBtn.setAttribute('class', 'info-btn');
+      infoBtn.style.cursor = 'pointer';
+
+      const bbox = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      bbox.setAttribute('x', -size.w/2 - 6);
+      bbox.setAttribute('y', -size.h/2 - 6);
+      bbox.setAttribute('width', size.w + 12);
+      bbox.setAttribute('height', size.h + 12);
+      bbox.setAttribute('rx', 6);
+      bbox.setAttribute('fill','none');
+      bbox.setAttribute('stroke-width', 1.5);
+      bbox.setAttribute('stroke','transparent');
+      bbox.setAttribute('class','chair-bbox');
+
+      const rh = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      rh.setAttribute('x', -6);
+      rh.setAttribute('y', size.h/2 + 8);
+      rh.setAttribute('width', 12);
+      rh.setAttribute('height', 12);
+      rh.setAttribute('rx', 2);
+      rh.setAttribute('fill','#fff3');
+      rh.setAttribute('class','rotate-handle');
+      rh.style.cursor = 'grab';
+
+      g.appendChild(bbox);
+      g.appendChild(img);
+      g.appendChild(infoBtn);
+      g.appendChild(rh);
+
+      const transform = `translate(${chair.x},${chair.y}) rotate(${chair.rotation || 0})`;
+      g.setAttribute('transform', transform);
+
+      infoBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openChairModal(chair.id);
+      });
+
+      g.addEventListener('pointerdown', (ev) => onChairPointerDown(ev, chair.id));
+
+      g.addEventListener('pointerenter', ()=> {
+        State.hoveringChairId = chair.id;
+        showTooltipForChair(chair);
+      });
+      g.addEventListener('pointerleave', ()=> {
+        State.hoveringChairId = null;
+        hideTooltip();
+      });
+
+      layer.appendChild(g);
+
+      if (State.selectedChairId === chair.id) {
+        bbox.setAttribute('stroke', '#0ea5e9');
+        bbox.setAttribute('stroke-dasharray', '4 3');
+      }
+    });
+  }
+
+  /* ===========================
+     UI list renders & helpers
+     =========================== */
+  function renderAreasListUI() {
+    $.areasList.innerHTML = '';
+    (State.positions.areas || []).forEach(area => {
+      const div = document.createElement('div');
+      div.className = 'area-item';
+      div.innerHTML = `<span>${area.name}</span><div>
+        <button class="small-btn" data-area-edit="${area.id}">Edit</button>
+        <button class="small-btn" data-area-delete="${area.id}">Delete</button>
+      </div>`;
+      $.areasList.appendChild(div);
+    });
+
+    $.areasList.querySelectorAll('[data-area-edit]').forEach(btn => {
+      btn.onclick = () => openAreaModal(btn.getAttribute('data-area-edit'));
+    });
+    $.areasList.querySelectorAll('[data-area-delete]').forEach(btn => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-area-delete');
+        const a = State.positions.areas.find(ar => ar.id === id);
+        if (!confirm(`Delete area "${a?.name || ''}"? Chairs assigned to it will lose area.`)) return;
+        State.positions.areas = State.positions.areas.filter(a => a.id !== id);
+        State.positions.chairs.forEach(c => { if (c.areaId === id) c.areaId = null; });
+        renderAll();
+        markPositionsChanged();
+      };
+    });
+  }
+
+  function renderChairsListUI() {
+    const q = ($.chairSearch.value || '').trim().toLowerCase();
+    $.chairsList.innerHTML = '';
+    const items = (State.positions.chairs || []).map(ch => {
+      const det = (State.details.chairs || []).find(dc => dc.id === ch.id) || {};
+      return { pos: ch, det };
+    }).filter(item => {
+      if (!q) return true;
+      return (item.det.name || '').toLowerCase().includes(q) || (item.det.pcNumber || '').toLowerCase().includes(q);
+    }).sort((a,b) => (a.pos.z||0)-(b.pos.z||0));
+
+    items.forEach(({pos,det}) => {
+      const div = document.createElement('div');
+      div.className = 'chair-list-item';
+      div.innerHTML = `<div>
+        <strong>${det.name || '(unnamed)'}</strong><br/>
+        <small>${det.pcNumber || ''} ${pos.areaId ? ('• '+(State.positions.areas.find(a=>a.id===pos.areaId)?.name||'')) : ''}</small>
+      </div>
+      <div>
+        <button class="small-btn" data-select="${pos.id}">Select</button>
+        <button class="small-btn" data-open="${pos.id}">Edit</button>
+      </div>`;
+      $.chairsList.appendChild(div);
+    });
+
+    $.chairsList.querySelectorAll('[data-select]').forEach(b => {
+      b.onclick = () => { State.selectedChairId = b.getAttribute('data-select'); renderAll(); };
+    });
+    $.chairsList.querySelectorAll('[data-open]').forEach(b => {
+      b.onclick = () => openChairModal(b.getAttribute('data-open'));
+    });
+  }
+
+  function populateModalAreaSelect() {
+    $.modalArea.innerHTML = '<option value="">(none)</option>';
+    (State.positions.areas || []).forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id; opt.textContent = a.name;
+      $.modalArea.appendChild(opt);
+    });
+  }
+
+  /* ===========================
+     Add chair on canvas (Add mode)
+     =========================== */
+  $.svg.addEventListener('click', (ev) => {
+    if (State.mode !== 'add') return;
+    // ignore clicks that bubbled from interactive items
+    if (ev.defaultPrevented) return;
+    const pt = screenToSvgPoint(ev.clientX, ev.clientY);
+    const snappedX = State.gridSnap ? Utils.snap(pt.x, 10) : pt.x;
+    const snappedY = State.gridSnap ? Utils.snap(pt.y, 10) : pt.y;
+    const floorW = Number($.floorImage.getAttribute('width') || 2000);
+    const floorH = Number($.floorImage.getAttribute('height') || 2000);
+    const wPad = State.defaultChairSize.w/2, hPad = State.defaultChairSize.h/2;
+    const x = Utils.clamp(snappedX, wPad, floorW - wPad);
+    const y = Utils.clamp(snappedY, hPad, floorH - hPad);
+    addChair({ x, y });
+  });
+
+  function addChair({ x, y, rotation = 0, areaId = null }) {
+    const id = Utils.uuidv4();
+    const z = ((State.positions.chairs || []).reduce((m,c)=>Math.max(m,c.z||0),0) || 0) + 1;
+    State.positions.chairs = State.positions.chairs || [];
+    State.positions.chairs.push({ id, x, y, rotation, z, areaId });
+    State.details.chairs = State.details.chairs || [];
+    State.details.chairs.push({ id, name:'', positionTitle:'', pcNumber:'', accessories:'', notes:'' });
+    State.selectedChairId = id;
+    renderAll();
+    markPositionsChanged(); // autosave positions
+    markDetailsChanged();   // autosave details (new blank)
+  }
+
+  /* ===========================
+     Pointer interactions: dragging & rotating
+     =========================== */
+  let pointerState = {
+    dragging: false,
+    dragChairId: null,
+    dragOffset: { x:0, y:0 },
+    rotating: false,
+    rotateStartAngle: 0,
+    rotateChairId: null,
+    rotateStartRotation: 0
+  };
+
+  function onChairPointerDown(ev, chairId) {
+    ev.preventDefault();
+    if (ev.button !== 0) return;
+
+    State.selectedChairId = chairId;
+    renderAll();
+
+    const target = ev.target;
+    if (target.classList.contains('rotate-handle')) {
+      // start rotating
+      pointerState.rotating = true;
+      pointerState.rotateChairId = chairId;
+      pointerState.rotateStartRotation = (State.positions.chairs.find(c=>c.id===chairId).rotation || 0);
+      const center = getChairCenterScreen(chairId);
+      pointerState.rotateStartAngle = Math.atan2(ev.clientY - center.y, ev.clientX - center.x);
+      document.addEventListener('pointermove', onPointerRotateMove);
+      document.addEventListener('pointerup', onPointerUp);
+      return;
+    }
+
+    // else start dragging
+    pointerState.dragging = true;
+    pointerState.dragChairId = chairId;
+    const chair = State.positions.chairs.find(c=>c.id===chairId);
+    const pt = screenToSvgPoint(ev.clientX, ev.clientY);
+    pointerState.dragOffset.x = chair.x - pt.x;
+    pointerState.dragOffset.y = chair.y - pt.y;
+
+    document.addEventListener('pointermove', onPointerDragMove);
+    document.addEventListener('pointerup', onPointerUp);
+  }
+
+  function onPointerDragMove(ev) {
+    if (!pointerState.dragging) return;
+    const chairId = pointerState.dragChairId;
+    const pt = screenToSvgPoint(ev.clientX, ev.clientY);
+    let newX = pt.x + pointerState.dragOffset.x;
+    let newY = pt.y + pointerState.dragOffset.y;
+    if (State.gridSnap) {
+      newX = Utils.snap(newX, 10);
+      newY = Utils.snap(newY, 10);
+    }
+    const floorW = Number($.floorImage.getAttribute('width') || 2000);
+    const floorH = Number($.floorImage.getAttribute('height') || 2000);
+    const wPad = State.defaultChairSize.w/2, hPad = State.defaultChairSize.h/2;
+    newX = Utils.clamp(newX, wPad, floorW - wPad);
+    newY = Utils.clamp(newY, hPad, floorH - hPad);
+
+    const chair = State.positions.chairs.find(c=>c.id===chairId);
+    chair.x = newX; chair.y = newY;
+
+    // auto assign area if inside any area
+    const containing = (State.positions.areas || []).find(a => {
+      return newX >= a.x && newX <= a.x + a.width && newY >= a.y && newY <= a.y + a.height;
+    });
+    chair.areaId = containing ? containing.id : null;
+
+    renderChairs();
+    renderChairsListUI();
+  }
+
+  function onPointerRotateMove(ev) {
+    if (!pointerState.rotating) return;
+    const chairId = pointerState.rotateChairId;
+    const center = getChairCenterScreen(chairId);
+    const angleNow = Math.atan2(ev.clientY - center.y, ev.clientX - center.x);
+    const delta = angleNow - pointerState.rotateStartAngle;
+    let deg = pointerState.rotateStartRotation + Utils.radToDeg(delta);
+    deg = ((deg % 360) + 360) % 360;
+    const chair = State.positions.chairs.find(c=>c.id===chairId);
+    chair.rotation = Math.round(deg);
+    renderChairs();
+  }
+
+  function onPointerUp() {
+    if (pointerState.dragging || pointerState.rotating) {
+      document.removeEventListener('pointermove', onPointerDragMove);
+      document.removeEventListener('pointermove', onPointerRotateMove);
+      document.removeEventListener('pointerup', onPointerUp);
+
+      pointerState.dragging = false;
+      pointerState.rotating = false;
+      pointerState.dragChairId = null;
+      pointerState.rotateChairId = null;
+
+      renderAll();
+      markPositionsChanged(); // persist after move/rotate
+    }
+  }
+
+  function getChairCenterScreen(chairId) {
+    const chair = State.positions.chairs.find(c=>c.id===chairId);
+    const pt = $.svg.createSVGPoint();
+    pt.x = chair.x; pt.y = chair.y;
+    const ctm = $.viewport.getCTM(); // viewport group's CTM to screen
+    const screenP = pt.matrixTransform(ctm);
+    return { x: screenP.x, y: screenP.y };
+  }
+
+  /* ===========================
+     Screen <-> SVG coordinate helpers for pan/zoom
+     =========================== */
+  function updateViewportTransform() {
+    const s = State.viewport.scale;
+    const tx = State.viewport.tx;
+    const ty = State.viewport.ty;
+    $.viewport.setAttribute('transform', `translate(${tx},${ty}) scale(${s})`);
+  }
+
+  function screenToSvgPoint(clientX, clientY) {
+    const pt = $.svg.createSVGPoint();
+    pt.x = clientX; pt.y = clientY;
+    const ctm = $.svg.getScreenCTM();
+    if (!ctm) return { x:0, y:0 };
+    const inv = ctm.inverse();
+    const svgP = pt.matrixTransform(inv);
+    return { x: svgP.x, y: svgP.y };
+  }
+
+  /* ===========================
+     Pan & Zoom
+     =========================== */
+  let spaceKeyDown = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { spaceKeyDown = true; $.svg.style.cursor = 'grab'; e.preventDefault(); }
+    // keyboard actions
+    if (e.key === 'Delete') {
+      if (State.selectedChairId) {
+        if (confirm('Delete selected chair?')) {
+          removeChairById(State.selectedChairId);
+        }
+      }
+    }
+    if (e.key === 'q' || e.key === 'Q') {
+      if (State.selectedChairId) {
+        rotateSelectedBy(e.shiftKey ? -15 : -5);
+      }
+    }
+    if (e.key === 'e' || e.key === 'E') {
+      if (State.selectedChairId) {
+        rotateSelectedBy(e.shiftKey ? 15 : 5);
+      }
+    }
+    if (e.key === 'Escape') {
+      closeChairModal(); closeAreaModal();
+      State.selectedChairId = null; renderAll();
+    }
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+      const delta = e.shiftKey ? 10 : 1;
+      if (State.selectedChairId) {
+        const ch = State.positions.chairs.find(c=>c.id===State.selectedChairId);
+        if (!ch) return;
+        if (e.key === 'ArrowUp') ch.y -= delta;
+        if (e.key === 'ArrowDown') ch.y += delta;
+        if (e.key === 'ArrowLeft') ch.x -= delta;
+        if (e.key === 'ArrowRight') ch.x += delta;
+        renderAll();
+        markPositionsChanged();
+      }
+      e.preventDefault();
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') { spaceKeyDown = false; $.svg.style.cursor = 'default'; }
+  });
+
+  /* Pointer-based pan */
+  let isPanning = false;
+  let panStart = { x:0, y:0, tx:0, ty:0 };
+  $.svg.addEventListener('pointerdown', (ev) => {
+    if (!spaceKeyDown) return;
+    isPanning = true;
+    panStart.x = ev.clientX; panStart.y = ev.clientY;
+    panStart.tx = State.viewport.tx; panStart.ty = State.viewport.ty;
+    document.addEventListener('pointermove', onPanMove);
+    document.addEventListener('pointerup', onPanUp);
+  });
+
+  function onPanMove(ev) {
+    if (!isPanning) return;
+    const dx = ev.clientX - panStart.x;
+    const dy = ev.clientY - panStart.y;
+    State.viewport.tx = panStart.tx + dx;
+    State.viewport.ty = panStart.ty + dy;
+    updateViewportTransform();
+  }
+
+  function onPanUp() {
+    if (!isPanning) return;
+    isPanning = false;
+    document.removeEventListener('pointermove', onPanMove);
+    document.removeEventListener('pointerup', onPanUp);
+  }
+
+  /* Wheel for zoom / alt-rotate */
+  $.svg.addEventListener('wheel', (ev) => {
+    if (ev.ctrlKey || ev.metaKey) {
+      ev.preventDefault();
+      const factor = ev.deltaY < 0 ? 1.1 : 0.9;
+      zoomAtPoint(factor, ev.clientX, ev.clientY);
+    } else if (ev.altKey && State.hoveringChairId) {
+      ev.preventDefault();
+      const chair = State.positions.chairs.find(c=>c.id===State.hoveringChairId);
+      if (!chair) return;
+      const delta = ev.deltaY < 0 ? 3 : -3;
+      chair.rotation = ((chair.rotation + delta) % 360 + 360) % 360;
+      renderChairs();
+      markPositionsChanged();
+    }
+  }, { passive: false });
+
+  function zoomAtPoint(factor, clientX, clientY) {
+    const before = screenToSvgPoint(clientX, clientY);
+    State.viewport.scale *= factor;
+    State.viewport.scale = Utils.clamp(State.viewport.scale, 0.2, 5);
+    updateViewportTransform();
+    const after = screenToSvgPoint(clientX, clientY);
+    State.viewport.tx += (after.x - before.x) * State.viewport.scale;
+    State.viewport.ty += (after.y - before.y) * State.viewport.scale;
+    updateViewportTransform();
+  }
+
+  $.zoomInBtn.addEventListener('click', ()=> zoomAtPoint(1.2, window.innerWidth/2, window.innerHeight/2));
+  $.zoomOutBtn.addEventListener('click', ()=> zoomAtPoint(1/1.2, window.innerWidth/2, window.innerHeight/2));
+  $.zoomResetBtn.addEventListener('click', ()=> {
+    State.viewport.scale = 1; State.viewport.tx = 0; State.viewport.ty = 0; updateViewportTransform();
+  });
+
+  /* ===========================
+     Utility: rotate selected, remove chair
+     =========================== */
+  function rotateSelectedBy(deg) {
+    const id = State.selectedChairId;
+    if (!id) return;
+    const ch = State.positions.chairs.find(c=>c.id===id);
+    ch.rotation = ((ch.rotation + deg) % 360 + 360) % 360;
+    renderChairs();
+    markPositionsChanged();
+  }
+
+  function removeChairById(id) {
+    State.positions.chairs = (State.positions.chairs || []).filter(c => c.id !== id);
+    State.details.chairs = (State.details.chairs || []).filter(d => d.id !== id);
+    if (State.selectedChairId === id) State.selectedChairId = null;
+    renderAll();
+    markPositionsChanged();
+    markDetailsChanged();
+  }
+
+  /* ===========================
+     Chair modal logic
+     =========================== */
+  function openChairModal(chairId) {
+    State.selectedChairId = chairId;
+    const chair = (State.positions.chairs || []).find(c => c.id === chairId);
+    const detail = (State.details.chairs || []).find(d => d.id === chairId) || { id: chairId, name:'', positionTitle:'', pcNumber:'', accessories:'', notes:'' };
+
+    $.modalChairId.value = chairId;
+    $.modalName.value = detail.name || '';
+    $.modalPositionTitle.value = detail.positionTitle || '';
+    $.modalPcNumber.value = detail.pcNumber || '';
+    $.modalAccessories.value = detail.accessories || '';
+    $.modalNotes.value = detail.notes || '';
+    $.modalArea.value = chair ? (chair.areaId || '') : '';
+    $.chairModal.classList.remove('hidden');
+  }
+
+  function closeChairModal() { $.chairModal.classList.add('hidden'); }
+
+  $.saveChairBtn.addEventListener('click', () => {
+    const id = $.modalChairId.value;
+    let det = (State.details.chairs || []).find(d => d.id === id);
+    if (!det) {
+      det = { id, name:'', positionTitle:'', pcNumber:'', accessories:'', notes:'' };
+      State.details.chairs = State.details.chairs || [];
+      State.details.chairs.push(det);
+    }
+    det.name = $.modalName.value;
+    det.positionTitle = $.modalPositionTitle.value;
+    det.pcNumber = $.modalPcNumber.value;
+    det.accessories = $.modalAccessories.value;
+    det.notes = $.modalNotes.value;
+
+    const ch = (State.positions.chairs || []).find(c => c.id === id);
+    if (ch) ch.areaId = $.modalArea.value || null;
+
+    closeChairModal();
+    renderAll();
+    markDetailsChanged();
+    markPositionsChanged();
+  });
+
+  $.cancelChairBtn.addEventListener('click', () => closeChairModal());
+
+  $.removeChairBtn.addEventListener('click', () => {
+    const id = $.modalChairId.value;
+    if (!confirm('Remove chair? This deletes both position and details.')) return;
+    removeChairById(id);
+    closeChairModal();
+  });
+
+  /* ===========================
+     Areas modal logic
+     =========================== */
+  function openAreaModal(areaId) {
+    const area = (State.positions.areas || []).find(a => a.id === areaId);
+    if (!area) return;
+    $.areaId.value = area.id;
+    $.areaName.value = area.name;
+    $.areaX.value = area.x;
+    $.areaY.value = area.y;
+    $.areaW.value = area.width;
+    $.areaH.value = area.height;
+    $.areaColor.value = (area.color || '#1E90FF80').slice(0,7);
+    $.areaModal.classList.remove('hidden');
+  }
+
+  function closeAreaModal() { $.areaModal.classList.add('hidden'); $.areaId.value = ''; }
+
+  $.addAreaBtn.addEventListener('click', () => {
+    const id = Utils.uuidv4();
+    const newArea = { id, name: 'New Area', x: 100, y: 100, width: 300, height: 200, color: '#1E90FF66' };
+    State.positions.areas = State.positions.areas || [];
+    State.positions.areas.push(newArea);
+    renderAll();
+    openAreaModal(id);
+    markPositionsChanged();
+  });
+
+  $.saveAreaBtn.addEventListener('click', () => {
+    const id = $.areaId.value;
+    if (!id) {
+      const nId = Utils.uuidv4();
+      State.positions.areas = State.positions.areas || [];
+      State.positions.areas.push({
+        id: nId,
+        name: $.areaName.value,
+        x: Number($.areaX.value || 0),
+        y: Number($.areaY.value || 0),
+        width: Number($.areaW.value || 100),
+        height: Number($.areaH.value || 100),
+        color: ($.areaColor.value || '#1E90FF') + '80'
+      });
+      closeAreaModal();
+      renderAll();
+      markPositionsChanged();
+      return;
+    }
+    const area = (State.positions.areas || []).find(a => a.id === id);
+    if (!area) return;
+    area.name = $.areaName.value;
+    area.x = Number($.areaX.value || 0);
+    area.y = Number($.areaY.value || 0);
+    area.width = Number($.areaW.value || 100);
+    area.height = Number($.areaH.value || 100);
+    area.color = ($.areaColor.value || '#1E90FF') + '80';
+    closeAreaModal();
+    renderAll();
+    markPositionsChanged();
+  });
+
+  $.cancelAreaBtn.addEventListener('click', () => closeAreaModal());
+
+  $.deleteAreaBtn.addEventListener('click', () => {
+    const id = $.areaId.value;
+    if (!id) return;
+    if (!confirm('Delete this area? Chairs assigned to it will not be deleted, but their areaId will be cleared.')) return;
+    State.positions.areas = (State.positions.areas || []).filter(a => a.id !== id);
+    State.positions.chairs.forEach(c => { if (c.areaId === id) c.areaId = null; });
+    closeAreaModal();
+    renderAll();
+    markPositionsChanged();
+  });
+
+  /* ===========================
+     Import/Export & Replace images
+     =========================== */
+  $.exportPositionsBtn.addEventListener('click', () => {
+    Utils.download('position.json', JSON.stringify(State.positions, null, 2));
+  });
+
+  $.exportDetailsBtn.addEventListener('click', () => {
+    Utils.download('details.json', JSON.stringify(State.details, null, 2));
+  });
+
+  $.importPositionsBtn.addEventListener('click', () => $.importPositionsFile.click());
+  $.importDetailsBtn.addEventListener('click', () => $.importDetailsFile.click());
+
+  $.importPositionsFile.addEventListener('change', async (ev) => {
+    const file = ev.target.files[0]; if (!file) return;
+    try {
+      const text = await Utils.readFileAsText(file);
+      const parsed = JSON.parse(text);
+      if (!parsed || !Array.isArray(parsed.chairs) || !Array.isArray(parsed.areas)) throw new Error('Invalid positions schema');
+      State.positions = parsed;
+      renderAll();
+      markPositionsChanged();
+      alert('Positions imported.');
+    } catch (err) { alert('Import failed: ' + err.message); }
+    ev.target.value = '';
+  });
+
+  $.importDetailsFile.addEventListener('change', async (ev) => {
+    const file = ev.target.files[0]; if (!file) return;
+    try {
+      const text = await Utils.readFileAsText(file);
+      const parsed = JSON.parse(text);
+      if (!parsed || !Array.isArray(parsed.chairs)) throw new Error('Invalid details schema');
+      State.details = parsed;
+      renderAll();
+      markDetailsChanged();
+      alert('Details imported.');
+    } catch (err) { alert('Import failed: ' + err.message); }
+    ev.target.value = '';
+  });
+
+  $.replaceFloorFile.addEventListener('change', async (ev) => {
+    const file = ev.target.files[0]; if (!file) return;
+    const url = URL.createObjectURL(file);
+    State.floorImageUrl = url;
+    applyFloorImage(url);
+    // optionally persist image reference inside positions if you want:
+    // State.positions.floorImageUrl = url; markPositionsChanged();
+  });
+
+  $.replaceChairFile.addEventListener('change', async (ev) => {
+    const file = ev.target.files[0]; if (!file) return;
+    const url = URL.createObjectURL(file);
+    State.chairImageUrl = url;
+    renderAll();
+    // optionally persist: State.positions.chairImageUrl = url; markPositionsChanged();
+  });
+
+  /* ===========================
+     Toolbar wiring
+     =========================== */
+  function setModeUI() {
+    $.modeAddBtn.classList.toggle('active', State.mode === 'add');
+    $.modeSelectBtn.classList.toggle('active', State.mode === 'select');
+    $.rotateModeBtn.classList.toggle('active', State.mode === 'rotate');
+  }
+
+  $.modeAddBtn.addEventListener('click', () => { State.mode = 'add'; setModeUI(); });
+  $.modeSelectBtn.addEventListener('click', () => { State.mode = 'select'; setModeUI(); });
+  $.rotateModeBtn.addEventListener('click', () => { State.mode = 'rotate'; setModeUI(); });
+
+  $.gridSnapCheckbox.addEventListener('change', () => { State.gridSnap = $.gridSnapCheckbox.checked; });
+
+  $.bringFrontBtn.addEventListener('click', () => {
+    if (!State.selectedChairId) return alert('Select a chair first.');
+    const ch = (State.positions.chairs || []).find(c => c.id === State.selectedChairId);
+    if (!ch) return;
+    ch.z = ((State.positions.chairs || []).reduce((m,c)=>Math.max(m, c.z||0), 0) || 0) + 1;
+    renderAll();
+    markPositionsChanged();
+  });
+
+  $.sendBackBtn.addEventListener('click', () => {
+    if (!State.selectedChairId) return alert('Select a chair first.');
+    const ch = (State.positions.chairs || []).find(c => c.id === State.selectedChairId);
+    if (!ch) return;
+    ch.z = ((State.positions.chairs || []).reduce((m,c)=>Math.min(m, c.z||0), 0) || 0) - 1;
+    renderAll();
+    markPositionsChanged();
+  });
+
+  $.clearAllBtn.addEventListener('click', () => {
+    if (!confirm('Clear all chairs and details?')) return;
+    State.positions.chairs = [];
+    State.details.chairs = [];
+    State.selectedChairId = null;
+    renderAll();
+    markPositionsChanged();
+    markDetailsChanged();
+  });
+
+  $.chairSearch.addEventListener('input', () => renderChairsListUI());
+
+  /* ===========================
+     Tooltips
+     =========================== */
+  let tooltipEl = null;
+  function showTooltipForChair(chair) {
+    const det = (State.details.chairs || []).find(d => d.id === chair.id) || {};
+    const text = `${det.name || '(unnamed)'}${det.pcNumber ? ' • '+det.pcNumber : ''}`;
+    if (!text) return;
+    if (!tooltipEl) {
+      tooltipEl = document.createElement('div');
+      tooltipEl.className = 'tooltip';
+      document.body.appendChild(tooltipEl);
+    }
+    tooltipEl.textContent = text;
+    const center = svgPointToScreen(chair.x, chair.y);
+    tooltipEl.style.left = (center.x + 12) + 'px';
+    tooltipEl.style.top = (center.y - 12) + 'px';
+  }
+  function hideTooltip() {
+    if (tooltipEl) tooltipEl.remove();
+    tooltipEl = null;
+  }
+
+  function svgPointToScreen(svgX, svgY) {
+    const pt = $.svg.createSVGPoint();
+    pt.x = svgX; pt.y = svgY;
+    const ctm = $.viewport.getCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const screenP = pt.matrixTransform(ctm);
+    return { x: screenP.x, y: screenP.y };
+  }
+
+  /* ===========================
+     Init & boot
+     =========================== */
+  async function init() {
+    // load server-provided JSON (if any)
+    await loadInitialData();
+
+    // default assets
+    State.floorImageUrl = 'assets/samplefloorplan.jpg';
+    State.chairImageUrl = 'assets/r.png';
+    applyFloorImage(State.floorImageUrl);
+
+    // wire UI and render
+    wireInitialUI();
+    setModeUI();
+    $.gridSnapCheckbox.checked = State.gridSnap;
+
+    renderAll();
+
+    // expose for debug
+    window.__ISP = { State, Utils, markPositionsChanged, markDetailsChanged, renderAll };
+  }
+
+  function wireInitialUI() {
+    // most listeners already wired above; additional safety wiring:
+    // click anywhere to clear selection (unless clicking interactive elements)
+    $.svg.addEventListener('pointerdown', (ev) => {
+      // if click on empty svg area (not on an element with data-chair-id)
+      if (ev.target === $.svg || ev.target === $.floorImage || ev.target === $.viewport) {
+        if (State.mode === 'select') {
+          State.selectedChairId = null;
+          renderAll();
+        }
+      }
+    });
+  }
+
+  // start
+  init();
+
+})();

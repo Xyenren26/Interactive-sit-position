@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Interactive Seating Planner</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="left">
+        <button id="importPositionsBtn">Import Positions</button>
+        <button id="exportPositionsBtn">Export Positions</button>
+        <input type="file" id="importPositionsFile" accept=".json" hidden />
+
+        <button id="importDetailsBtn">Import Details</button>
+        <button id="exportDetailsBtn">Export Details</button>
+        <input type="file" id="importDetailsFile" accept=".json" hidden />
+      </div>
+
+      <div class="mid">
+        <label class="file-btn">Replace Floor Plan<input type="file" id="replaceFloorFile" accept="image/*" /></label>
+        <label class="file-btn">Replace Chair Image<input type="file" id="replaceChairFile" accept="image/*" /></label>
+      </div>
+
+      <div class="right">
+        <span class="version">MPTC V1</span>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- Left toolbar -->
+      <aside class="leftbar">
+        <div class="tool-group">
+          <button id="modeAddBtn" class="tool">Add Chair</button>
+          <button id="modeSelectBtn" class="tool active">Select/Move</button>
+          <button id="rotateModeBtn" class="tool">Rotate Mode</button>
+        </div>
+
+        <div class="tool-group">
+          <label><input type="checkbox" id="gridSnap" /> Grid Snap (10px)</label>
+          <div class="zoom-controls">
+            <button id="zoomIn">Zoom In</button>
+            <button id="zoomOut">Zoom Out</button>
+            <button id="zoomReset">Reset</button>
+          </div>
+        </div>
+
+        <div class="tool-group">
+          <button id="bringFront">Bring to front</button>
+          <button id="sendBack">Send to back</button>
+          <button id="clearAll">Clear all chairs</button>
+        </div>
+      </aside>
+
+      <!-- Canvas area -->
+      <section class="canvas-wrap">
+        <div class="canvas-top-hint">Space + drag = pan | Ctrl/Cmd + wheel = zoom | Alt + wheel = rotate (when over chair)</div>
+        <svg id="floorSvg" tabindex="0" preserveAspectRatio="xMidYMid meet">
+          <g id="viewport">
+            <defs>
+              <pattern id="gridPattern" width="10" height="10" patternUnits="userSpaceOnUse">
+                <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="0.5"/>
+              </pattern>
+            </defs>
+            <rect id="gridOverlay" width="100%" height="100%" fill="url(#gridPattern)"/>
+            <image id="floorImage"></image>
+            <g id="areasLayer"></g>
+            <g id="chairsLayer"></g>
+          </g>
+        </svg>
+      </section>
+
+      <!-- Right sidebar -->
+      <aside class="rightbar">
+        <section class="areas-panel">
+          <h3>Areas</h3>
+          <div id="areasList"></div>
+          <button id="addAreaBtn">Add Area</button>
+        </section>
+
+        <section class="chairs-panel">
+          <h3>Chairs</h3>
+          <input id="chairSearch" placeholder="Search name / PC#" />
+          <div id="chairsList"></div>
+        </section>
+      </aside>
+    </main>
+
+    <!-- Chair Info Modal -->
+    <div id="chairModal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-content">
+        <h3>Edit Chair</h3>
+        <form id="chairForm">
+          <input type="hidden" id="modalChairId" />
+          <label>Name <input id="modalName" /></label>
+          <label>Position Title <input id="modalPositionTitle" /></label>
+          <label>PC Number <input id="modalPcNumber" /></label>
+          <label>Accessories <input id="modalAccessories" placeholder="comma-separated" /></label>
+          <label>Area
+            <select id="modalArea"></select>
+          </label>
+          <label>Notes <textarea id="modalNotes"></textarea></label>
+
+          <div class="modal-actions">
+            <button type="button" id="saveChairBtn">Save</button>
+            <button type="button" id="cancelChairBtn">Cancel</button>
+            <button type="button" id="removeChairBtn" class="danger">Remove Chair</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Area Editor Modal -->
+    <div id="areaModal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-content">
+        <h3>Area</h3>
+        <form id="areaForm">
+          <input type="hidden" id="areaId" />
+          <label>Name <input id="areaName" required /></label>
+          <label>X <input id="areaX" type="number" /></label>
+          <label>Y <input id="areaY" type="number" /></label>
+          <label>Width <input id="areaW" type="number" /></label>
+          <label>Height <input id="areaH" type="number" /></label>
+          <label>Color <input id="areaColor" type="color" value="#1E90FF" /></label>
+
+          <div class="modal-actions">
+            <button type="button" id="saveAreaBtn">Save</button>
+            <button type="button" id="cancelAreaBtn">Cancel</button>
+            <button type="button" id="deleteAreaBtn" class="danger">Delete Area</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Hidden file inputs for import/export -->
+    <input type="file" id="importPositions" accept=".json" hidden />
+    <input type="file" id="importDetails" accept=".json" hidden />
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
