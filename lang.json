@@ -1,0 +1,81 @@
+{
+  "English": {
+    "app_title": "Diagram List Manager",
+    "add_entry": "+ Add Entry",
+    "settings": "⚙ Settings",
+    "export_excel": "Export Excel",
+    "filters": "Filters",
+
+    "pdf_exists": "Exists",
+    "pdf_missing": "Missing",
+
+    "error": "Error",
+    "pdf_not_found": "Matching PDF not found",
+    "export_done": "Export Complete",
+    "export_msg": "Exported to {file}",
+
+    "settings_title": "Settings",
+    "excel_file": "Excel file",
+    "pdf_folder": "PDF folder",
+    "default_language": "Default Language",
+    "save_settings": "Save Settings",
+
+    "add_title": "Add Entry",
+    "edit_title": "Edit Entry",
+    "select_pdf": "Select PDF",
+    "replace_pdf": "Replace PDF",
+    "save": "Save",
+    "save_entry": "Save Entry",
+    "no_pdf": "No PDF selected",
+
+    "required_error": "Search No and PDF are required",
+    "duplicate_error": "Entry already exists",
+
+    "confirm_delete": "Confirm Delete",
+    "delete_msg": "Delete Search No {no}?\nPDF will also be deleted.",
+
+    "pdf_preview": "PDF Preview",
+    "open_pdf": "Open PDF",
+    "close": "Close"
+  },
+
+  "Japanese": {
+    "app_title": "図面リスト管理",
+    "add_entry": "＋ 新規追加",
+    "settings": "⚙ 設定",
+    "export_excel": "Excel出力",
+    "filters": "フィルター",
+
+    "pdf_exists": "あり",
+    "pdf_missing": "なし",
+
+    "error": "エラー",
+    "pdf_not_found": "該当するPDFが見つかりません",
+    "export_done": "出力完了",
+    "export_msg": "{file} に出力しました",
+
+    "settings_title": "設定",
+    "excel_file": "Excelファイル",
+    "pdf_folder": "PDFフォルダ",
+    "default_language": "初期言語",
+    "save_settings": "設定を保存",
+
+    "add_title": "新規登録",
+    "edit_title": "編集",
+    "select_pdf": "PDF選択",
+    "replace_pdf": "PDF差し替え",
+    "save": "保存",
+    "save_entry": "保存",
+    "no_pdf": "PDF未選択",
+
+    "required_error": "検索NoとPDFは必須です",
+    "duplicate_error": "すでに登録されています",
+
+    "confirm_delete": "削除確認",
+    "delete_msg": "検索No {no} を削除しますか？\nPDFも削除されます。",
+
+    "pdf_preview": "PDFプレビュー",
+    "open_pdf": "PDFを開く",
+    "close": "閉じる"
+  }
+}
