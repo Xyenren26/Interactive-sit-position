@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import pandas as pd
 import os
 import shutil
@@ -11,10 +11,15 @@ from PIL import Image, ImageTk
 # CONFIG & CONSTANTS
 # ===============================
 CONFIG_FILE = "config.json"
+COLUMNS_FILE = "columns.json"
 DEFAULT_CONFIG = {
     "excel_path": "excel/diagram_list.xlsx",
     "pdf_dir": "pdf",
     "language": "Japanese"
+}
+DEFAULT_COLUMNS = {
+    "english": ["Search No","Reference model","Contents","Before correction","After correction","Type 1","Type 2","Type 3","Type 4","Type 5"],
+    "japanese": ["検索No.","参考機種","内容","訂正前","訂正後","分類1","分類2","分類3","分類4","分類5"]
 }
 
 def load_config():
@@ -27,21 +32,34 @@ def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=4, ensure_ascii=False)
 
+def load_columns():
+    if not os.path.exists(COLUMNS_FILE):
+        with open(COLUMNS_FILE, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_COLUMNS, f, indent=4, ensure_ascii=False)
+        return DEFAULT_COLUMNS.copy()
+    with open(COLUMNS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_columns(columns):
+    with open(COLUMNS_FILE, "w", encoding="utf-8") as f:
+        json.dump(columns, f, indent=4, ensure_ascii=False)
+
 config = load_config()
+columns_data = load_columns()
+
 EXCEL_PATH = config["excel_path"]
 PDF_DIR = config["pdf_dir"]
 DEFAULT_LANG = config.get("language", "Japanese")
 os.makedirs(PDF_DIR, exist_ok=True)
 
-COLUMNS = ["Search No","Reference model","Contents","Before correction","After correction","Type 1","Type 2","Type 3","Type 4","Type 5"]
-JAPANESE_COLUMNS = ["検索No.","参考機種","内容","訂正前","訂正後","分類1","分類2","分類3","分類4","分類5"]
+COLUMNS = columns_data["english"]
+JAPANESE_COLUMNS = columns_data["japanese"]
 
 # ===============================
 # LANGUAGE TEXT
 # ===============================
 with open("lang.json", "r", encoding="utf-8") as f:
     LANG_TEXT = json.load(f)
-
 
 # ===============================
 # EXCEL HANDLING
@@ -137,6 +155,7 @@ class DiagramApp(tk.Tk):
         self.lang = DEFAULT_LANG
         self.text = LANG_TEXT[self.lang]
         self.df = load_excel()
+        self.columns_data = columns_data
         self.title(self.text["app_title"])
         self.geometry("1800x900")
         self.create_styles()
@@ -163,7 +182,6 @@ class DiagramApp(tk.Tk):
                 if "odd" not in current_tags:
                     current_tags.append("odd")
             self.tree.item(item, tags=tuple(current_tags))
-
         self.tree.tag_configure("even", background="light blue")
         self.tree.tag_configure("odd", background="#ffffff")
 
@@ -171,19 +189,24 @@ class DiagramApp(tk.Tk):
     def create_ui(self):
         header = tk.Frame(self, bg="#2b2f3a", height=55)
         header.pack(fill="x")
-
         self.title_lbl = tk.Label(header, fg="white", bg="#2b2f3a",
                                 font=("Segoe UI",16,"bold"))
         self.title_lbl.pack(side="left", padx=20)
+    
+        # ---------- Buttons in header ----------
+        self.add_btn = tk.Button(header, text=self.t("add_entry"), command=self.open_add_window)
+        self.settings_btn = tk.Button(header, text=self.t("settings"), command=self.open_settings)
+        self.export_btn = tk.Button(header, text=self.t("export_excel"),
+                                    command=lambda: export_excel(self.df, self.lang))
+        self.export_filtered_btn = tk.Button(header, text=self.t("export_filtered"),
+                                            command=self.export_filtered)
 
-        self.add_btn = tk.Button(header, command=self.open_add_window)
-        self.settings_btn = tk.Button(header, command=self.open_settings)
-        self.export_btn = tk.Button(header,
-            command=lambda: export_excel(self.filtered_df, self.lang))
-
+        # ---------- Pack buttons (right-aligned) ----------
+        self.export_filtered_btn.pack(side="right", padx=10)
         self.export_btn.pack(side="right", padx=10)
-        self.settings_btn.pack(side="right")
+        self.settings_btn.pack(side="right", padx=10)
         self.add_btn.pack(side="right", padx=10)
+
 
         self.filter_frame = tk.LabelFrame(self)
         self.filter_frame.pack(fill="x", padx=15, pady=10)
@@ -206,7 +229,6 @@ class DiagramApp(tk.Tk):
         self.tree.tag_configure("missing", foreground="red")
         self.tree.bind("<Double-1>", self.open_pdf_preview)
 
-        # Right-click menu with Delete
         self.menu = tk.Menu(self, tearoff=0)
         self.menu.add_command(label="Edit", command=self.edit_selected_row)
         self.menu.add_command(label="Delete", command=self.delete_selected_row)
@@ -222,27 +244,29 @@ class DiagramApp(tk.Tk):
     def create_filters(self):
         for w in self.filter_frame.winfo_children():
             w.destroy()
-        labels = JAPANESE_COLUMNS if self.lang == "Japanese" else COLUMNS
+        
+        labels = self.columns_data["japanese"] if self.lang == "Japanese" else self.columns_data["english"]
 
+        # ---------- Search No ----------
         self.search_var = tk.StringVar()
         tk.Label(self.filter_frame, text=labels[0]).pack(side="left")
         tk.Entry(self.filter_frame, textvariable=self.search_var, width=10).pack(side="left", padx=5)
         self.search_var.trace_add("write", lambda *_: self.apply_filters())
 
+        # ---------- Reference Model ----------
         tk.Label(self.filter_frame, text=labels[1]).pack(side="left", padx=(20,0))
-        models = sorted(self.df["Reference model"].dropna().unique())
-        self.model_filter = MultiSelectDropdown(
-            self.filter_frame,
-            models,
-            width=15,
-            callback=self.apply_filters
-        )
+        models = sorted(self.df["Reference model"].dropna().unique()) if "Reference model" in self.df.columns else []
+        self.model_filter = MultiSelectDropdown(self.filter_frame, models, width=15, callback=self.apply_filters)
         self.model_filter.pack(side="left", padx=5)
 
+        # ---------- Type 1 to 5 ----------
         self.type_filters = {}
         for i in range(1, 6):
-            tk.Label(self.filter_frame, text=labels[i+4]).pack(side="left", padx=(20 if i > 1 else 0, 0))
-            types = sorted(self.df[f"Type {i}"].dropna().unique())
+            type_col = f"Type {i}"
+            if type_col not in self.df.columns:
+                continue
+            tk.Label(self.filter_frame, text=labels[i+4]).pack(side="left", padx=(20 if i>1 else 0,0))
+            types = sorted(self.df[type_col].dropna().unique())
             msd = MultiSelectDropdown(self.filter_frame, types, width=15, callback=self.apply_filters)
             msd.pack(side="left", padx=5)
             self.type_filters[i] = msd
@@ -252,14 +276,56 @@ class DiagramApp(tk.Tk):
         search = self.search_var.get().strip()
         if search:
             df = df[df["Search No"].astype(str).str.contains(search, na=False)]
+
         selected_models = self.model_filter.get_selected() if self.model_filter else []
+
+        # ---------- Filter by Type 1-5 first ----------
+        for i in self.type_filters:
+            selected_types = self.type_filters[i].get_selected()
+            type_col = f"Type {i}"
+            if selected_types:
+                df = df[df[type_col].isin(selected_types)]
+
+        # ---------- Filter by Reference model ----------
         if selected_models:
             df = df[df["Reference model"].isin(selected_models)]
-        for i in range(1,6):
-            selected_types = self.type_filters[i].get_selected() if i in self.type_filters else []
-            if selected_types:
-                df = df[df[f"Type {i}"].isin(selected_types)]
+
+        # ---------- Update dropdown options dynamically ----------
+
+        # Reference model options based on selected Type 1
+        if 1 in self.type_filters:
+            selected_type1 = self.type_filters[1].get_selected()
+            if selected_type1:
+                # Always compute from full df
+                models = sorted(self.df[self.df["Type 1"].isin(selected_type1)]["Reference model"].dropna().unique())
+            else:
+                models = sorted(self.df["Reference model"].dropna().unique())
+            self.model_filter.values = models
+            self.model_filter.selected = [m for m in self.model_filter.selected if m in models]
+
+        # Type 1-5 options based on selected Reference model
+        for i in range(1, 6):
+            type_col = f"Type {i}"
+            if type_col in self.df.columns and i in self.type_filters:
+                if selected_models:
+                    available = sorted(self.df[self.df["Reference model"].isin(selected_models)][type_col].dropna().unique())
+                else:
+                    available = sorted(self.df[type_col].dropna().unique())
+                self.type_filters[i].values = available
+                self.type_filters[i].selected = [t for t in self.type_filters[i].selected if t in available]
+
         self.refresh_table(df)
+
+    def export_filtered(self):
+        if not hasattr(self, "filtered_df") or self.filtered_df.empty:
+            messagebox.showinfo(self.t("error"), self.t("no_data_to_export"))
+            return
+        
+        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                filetypes=[("Excel Files", "*.xlsx")])
+        if file_path:
+            self.filtered_df.to_excel(file_path, index=False)
+            messagebox.showinfo(self.t("export_done"), self.t("export_msg").format(file=file_path))
 
     def update_headers(self):
         self.text = LANG_TEXT[self.lang]
@@ -268,27 +334,56 @@ class DiagramApp(tk.Tk):
         self.add_btn.config(text=self.text["add_entry"])
         self.settings_btn.config(text=self.text["settings"])
         self.export_btn.config(text=self.text["export_excel"])
+        self.export_filtered_btn.config(text=self.text["export_filtered"])
         self.filter_frame.config(text=self.text["filters"])
 
-        headers = JAPANESE_COLUMNS if self.lang=="Japanese" else COLUMNS
+        # Reset the Treeview columns to match current COLUMNS + PDF
+        self.tree["columns"] = COLUMNS + ["PDF"]
+
+        # Pick labels based on language
+        headers = self.columns_data["japanese"] if self.lang == "Japanese" else self.columns_data["english"]
+
+        # Update headings for each column
         for i, col in enumerate(COLUMNS):
             self.tree.heading(col, text=headers[i])
             self.tree.column(col, width=140, anchor="center")
-        self.tree.heading("PDF", text="PDF")
+
+        # PDF column stays fixed
+        self.tree.heading("PDF", text="PDF", anchor="center")
+        self.tree.column("PDF", width=100, anchor="center")
+
 
     def refresh_table(self, df):
+        # Clear existing rows
         self.tree.delete(*self.tree.get_children())
         self.filtered_df = df.copy()
+
+        # Update columns dynamically (COLUMNS + PDF)
+        headers = COLUMNS + ["PDF"]
+        self.tree["columns"] = headers
+
+        # Localized headers
+        labels = self.columns_data["japanese"] if self.lang == "Japanese" else self.columns_data["english"]
+        for i, col in enumerate(COLUMNS):
+            self.tree.heading(col, text=labels[i], anchor="center")
+            self.tree.column(col, width=140, anchor="center")
+        self.tree.heading("PDF", text=self.t("pdf_header"), anchor="center")
+        self.tree.column("PDF", width=100, anchor="center")
+
+        # Insert rows
         for _, row in df.iterrows():
-            pdf = find_pdf(row["Search No"])
+            pdf = find_pdf(row.get("Search No", ""))
             status = self.t("pdf_exists") if pdf else self.t("pdf_missing")
             tag = "exists" if pdf else "missing"
             self.tree.insert(
                 "", "end",
-                values=[row[c] for c in COLUMNS] + [status],
+                values=[row.get(c, "") for c in COLUMNS] + [status],
                 tags=(tag,)
             )
+
+        # Apply row striping
         self.stripe_rows()
+
 
     # ---------- Right-click ----------
     def show_context_menu(self, event):
@@ -312,46 +407,86 @@ class DiagramApp(tk.Tk):
                 os.remove(pdf_path)
             self.refresh_table(self.df)
 
-   # For Edit entry
+    # ---------- Edit ----------
     def edit_selected_row(self):
         sel = self.tree.selection()
         if not sel:
             return
-
         values = self.tree.item(sel, "values")
         original_search_no = values[0]
 
         win = tk.Toplevel(self)
         win.title("Edit Entry")
-        win.geometry("550x820")
+        win.geometry("900x500")
+        win.minsize(700, 400)
 
-        labels = JAPANESE_COLUMNS if self.lang == "Japanese" else COLUMNS
+        # ---------- Paned Window ----------
+        paned = tk.PanedWindow(win, orient="horizontal")
+        paned.pack(fill="both", expand=True, padx=5, pady=5)
 
+        # ---------- Left: Scrollable column entries ----------
+        left_frame_outer = tk.Frame(paned)
+        paned.add(left_frame_outer, stretch="always")
+
+        left_canvas = tk.Canvas(left_frame_outer)
+        left_scrollbar = tk.Scrollbar(left_frame_outer, orient="vertical", command=left_canvas.yview)
+        left_inner = tk.Frame(left_canvas)
+
+        left_inner.bind(
+            "<Configure>",
+            lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+        )
+
+        left_canvas.create_window((0, 0), window=left_inner, anchor="nw")
+        left_canvas.configure(yscrollcommand=left_scrollbar.set, height=400)
+
+        left_canvas.pack(side="left", fill="both", expand=True)
+        left_scrollbar.pack(side="right", fill="y")
+
+        labels = self.columns_data["japanese"] if self.lang == "Japanese" else self.columns_data["english"]
         fields = {}
-        for i, col in enumerate(COLUMNS):
-            tk.Label(win, text=labels[i]).pack(anchor="w", padx=10)
-            var = tk.StringVar(value=values[i])
-            ent = tk.Entry(win, textvariable=var)
-            ent.pack(fill="x", padx=10)
-            fields[col] = var
 
-            # Optional: lock Search No
+        for i, col in enumerate(COLUMNS):
+            tk.Label(left_inner, text=labels[i]).pack(anchor="w", padx=10, pady=(5, 0))
+            var = tk.StringVar(value=values[i])
+            ent = tk.Entry(left_inner, textvariable=var, width=80)
+            ent.pack(fill="x", padx=10, pady=(0, 5))
+            fields[col] = var
             if col == "Search No":
                 ent.config(state="disabled")
+
+        # ---------- Right: PDF preview ----------
+        right_frame_outer = tk.Frame(paned)
+        paned.add(right_frame_outer, stretch="never")
+
+        right_canvas = tk.Canvas(right_frame_outer, width=300)
+        right_scrollbar = tk.Scrollbar(right_frame_outer, orient="vertical", command=right_canvas.yview)
+        right_inner = tk.Frame(right_canvas, padx=20, pady=20)  # padding for nicer look
+
+        right_inner.bind("<Configure>", lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
+        right_canvas.create_window((0, 0), window=right_inner, anchor="nw")
+        right_canvas.configure(yscrollcommand=right_scrollbar.set)
+
+        right_canvas.pack(side="left", fill="both", expand=True)
+        right_scrollbar.pack(side="right", fill="y")
+
+        # Layout with grid for centering
+        right_inner.grid_columnconfigure(0, weight=1)
 
         pdf_var = tk.StringVar()
         existing_pdf = find_pdf(original_search_no)
 
-        pdf_label = tk.Label(win,
-                            text=os.path.basename(existing_pdf) if existing_pdf else self.t("no_pdf"),
-                            fg="green" if existing_pdf else "red")
-        pdf_label.pack(pady=10)
+        pdf_label = tk.Label(right_inner,
+            text=os.path.basename(existing_pdf) if existing_pdf else self.t("no_pdf"),
+            fg="green" if existing_pdf else "red"
+        )
+        pdf_label.grid(row=0, column=0, pady=(0,5), sticky="n")
 
-        preview_label = tk.Label(win)
-        preview_label.pack(pady=5)
+        preview_label = tk.Label(right_inner)
+        preview_label.grid(row=1, column=0, pady=5, sticky="n")
 
         if existing_pdf:
-            thumb = generate_pdf_thumbnail(existing_pdf, width=80)
+            thumb = generate_pdf_thumbnail(existing_pdf, width=200)
             if thumb:
                 preview_label.config(image=thumb)
                 preview_label.image = thumb
@@ -361,49 +496,68 @@ class DiagramApp(tk.Tk):
             if p:
                 pdf_var.set(p)
                 pdf_label.config(text=os.path.basename(p), fg="green")
-                thumb = generate_pdf_thumbnail(p, width=80)
+                thumb = generate_pdf_thumbnail(p, width=200)
                 if thumb:
                     preview_label.config(image=thumb)
                     preview_label.image = thumb
+                messagebox.showinfo(self.t("success"), self.t("pdf_replaced"))
 
-        ttk.Button(win, text="Replace PDF", command=select_new_pdf).pack()
+        ttk.Button(right_inner, text=self.t("replace_pdf"), command=select_new_pdf).grid(row=2, column=0, pady=5,padx=100, sticky="n")
+
+        # ---------- Bottom buttons ----------
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(fill="x", pady=5, padx=5)
         ttk.Button(
-            win,
-            text="Save Changes",
-            command=lambda: self.save_edited_entry(
-                win, fields, pdf_var, original_search_no
-            )
-        ).pack(pady=15)
-
+            btn_frame, text=self.t("cancel"), command=win.destroy
+        ).pack(side="right", padx=(0,10))
+        ttk.Button(
+            btn_frame, text=self.t("save_changes"),
+            command=lambda: self.save_edited_entry(win, fields, pdf_var, original_search_no)
+        ).pack(side="right")
+        
     def save_edited_entry(self, win, fields, pdf_var, original_search_no):
         idx = self.df[self.df["Search No"] == original_search_no].index
         if idx.empty:
             return
 
+        # Update DataFrame values
         for col in COLUMNS:
             self.df.loc[idx, col] = fields[col].get()
 
-        # Replace PDF if user selected a new one
+        # Handle PDF replacement
         if pdf_var.get():
             if not os.path.exists(PDF_DIR):
                 os.makedirs(PDF_DIR)
 
+            # Remove old PDF if it exists
             old_pdf = find_pdf(original_search_no)
             if old_pdf and os.path.exists(old_pdf):
                 os.remove(old_pdf)
 
-            shutil.copy(pdf_var.get(), PDF_DIR)
+            # Normalize Search No
+            search_no_norm = str(fields["Search No"].get()).zfill(3)
 
+            # Get Type1 and Type2 values from the entry fields
+            type1 = fields.get("Type 1", tk.StringVar(value="")).get().strip()
+            type2 = fields.get("Type 2", tk.StringVar(value="")).get().strip()
+
+            # Build filename: 検索No.004_WR18_MOTOR ASSY.pdf
+            new_pdf_name = f"検索No.{search_no_norm}_{type1}_{type2}.pdf"
+            new_pdf_path = os.path.join(PDF_DIR, new_pdf_name)
+
+            # Copy and rename
+            shutil.copy(pdf_var.get(), new_pdf_path)
+
+        # Save Excel and refresh UI
         save_excel(self.df)
         self.refresh_table(self.df)
         win.destroy()
-
 
     # ---------- PDF Preview ----------
     def open_pdf_preview(self, event):
         sel = self.tree.selection()
         if not sel: return
-        values = self.tree.item(sel,"values")
+        values = self.tree.item(sel, "values")
         pdf = find_pdf(values[0])
         if not pdf:
             messagebox.showerror(self.t("error"), self.t("pdf_not_found"))
@@ -411,52 +565,196 @@ class DiagramApp(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title(self.t("pdf_preview"))
-        win.geometry("620x500")
-        canvas = tk.Canvas(win)
+        win.geometry("800x600")
+
+        canvas = tk.Canvas(win, bg="white")
+        canvas.pack(fill="both", expand=True)
+
         scrollbar = tk.Scrollbar(win, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
 
-        frame = tk.Frame(canvas)
-        canvas.create_window((0,0), window=frame, anchor="nw")
+        # state variables
+        self.zoom_level = 1.0
+        self.current_img = None
+        self.img_id = None
 
-        thumb = generate_pdf_thumbnail(pdf, width=700)
-        if thumb:
-            lbl = tk.Label(frame, image=thumb)
-            lbl.image = thumb
-            lbl.pack(padx=10, pady=10)
+        def render_image():
+            # regenerate thumbnail at current zoom level
+            base_width = int(700 * self.zoom_level)
+            thumb = generate_pdf_thumbnail(pdf, width=base_width)
+            if thumb:
+                if self.img_id:
+                    canvas.delete(self.img_id)
+                self.img_id = canvas.create_image(0, 0, image=thumb, anchor="nw")
+                canvas.image = thumb  # keep reference
+                canvas.config(scrollregion=canvas.bbox("all"))
 
-        btn_frame = tk.Frame(frame)
+        # initial render
+        render_image()
+
+        # pan with mouse drag
+        canvas.bind("<ButtonPress-1>", lambda e: canvas.scan_mark(e.x, e.y))
+        canvas.bind("<B1-Motion>", lambda e: canvas.scan_dragto(e.x, e.y, gain=1))
+
+        # zoom with mouse wheel
+        def zoom(event):
+            if event.delta > 0:
+                self.zoom_level *= 1.2
+            else:
+                self.zoom_level /= 1.2
+            render_image()
+        canvas.bind("<MouseWheel>", zoom)
+
+        # buttons frame
+        btn_frame = tk.Frame(win)
         btn_frame.pack(pady=10)
         tk.Button(btn_frame, text=self.t("open_pdf"), command=lambda: os.startfile(pdf)).pack(side="left", padx=5)
         tk.Button(btn_frame, text=self.t("close"), command=win.destroy).pack(side="left", padx=5)
-
-        frame.update_idletasks()
-        canvas.config(scrollregion=canvas.bbox("all"))
 
     # ---------- Settings ----------
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title(self.t("settings_title"))
-        win.geometry("500x300")
-
+        win.geometry("500x350")
         excel_var = tk.StringVar(value=EXCEL_PATH)
         pdf_var = tk.StringVar(value=PDF_DIR)
         lang_var = tk.StringVar(value=self.lang)
 
-        tk.Label(win, text=self.t("excel_file")).pack(anchor="w", padx=10)
-        tk.Entry(win, textvariable=excel_var).pack(fill="x", padx=10)
+        def update_text(*args):
+            lang = lang_var.get()
+            excel_browse_btn.config(text=LANG_TEXT[lang]["browse_excel"])
+            pdf_browse_btn.config(text=LANG_TEXT[lang]["browse_pdf"])
+            excel_label.config(text=LANG_TEXT[lang]["excel_file"])
+            pdf_label.config(text=LANG_TEXT[lang]["pdf_folder"])
+            lang_label.config(text=LANG_TEXT[lang]["default_language"])
+            save_btn.config(text=LANG_TEXT[lang]["save_settings"])
+            columns_btn.config(text=LANG_TEXT[lang]["manage_columns"])
+            win.title(LANG_TEXT[lang]["settings_title"])
 
-        tk.Label(win, text=self.t("pdf_folder")).pack(anchor="w", padx=10, pady=(10,0))
-        tk.Entry(win, textvariable=pdf_var).pack(fill="x", padx=10)
+        # Excel
+        excel_label = tk.Label(win, text=LANG_TEXT[lang_var.get()]["excel_file"])
+        excel_label.pack(anchor="w", padx=10)
+        excel_frame = tk.Frame(win)
+        excel_frame.pack(fill="x", padx=10)
+        tk.Entry(excel_frame, textvariable=excel_var).pack(side="left", fill="x", expand=True)
+        excel_browse_btn = tk.Button(
+            excel_frame,
+            text=LANG_TEXT[lang_var.get()]["browse_excel"],
+            command=lambda: excel_var.set(filedialog.askopenfilename(
+                title=LANG_TEXT[lang_var.get()]["browse_excel"],
+                filetypes=[("Excel files", "*.xlsx *.xls")]
+            ))
+        )
+        excel_browse_btn.pack(side="left", padx=5)
 
-        tk.Label(win, text=self.t("default_language")).pack(anchor="w", padx=10, pady=(10,0))
-        ttk.Combobox(win, textvariable=lang_var,
-                     values=["Japanese","English"]).pack(anchor="w", padx=10)
+        # PDF folder
+        pdf_label = tk.Label(win, text=LANG_TEXT[lang_var.get()]["pdf_folder"])
+        pdf_label.pack(anchor="w", padx=10, pady=(10,0))
+        pdf_frame = tk.Frame(win)
+        pdf_frame.pack(fill="x", padx=10)
+        tk.Entry(pdf_frame, textvariable=pdf_var).pack(side="left", fill="x", expand=True)
+        pdf_browse_btn = tk.Button(
+            pdf_frame,
+            text=LANG_TEXT[lang_var.get()]["browse_pdf"],
+            command=lambda: pdf_var.set(filedialog.askdirectory(
+                title=LANG_TEXT[lang_var.get()]["browse_pdf"]
+            ))
+        )
+        pdf_browse_btn.pack(side="left", padx=5)
 
-        ttk.Button(win, text=self.t("save_settings"),
-                   command=lambda:self.save_settings(win, excel_var, pdf_var, lang_var)).pack(pady=20)
+        # Language
+        lang_label = tk.Label(win, text=LANG_TEXT[lang_var.get()]["default_language"])
+        lang_label.pack(anchor="w", padx=10, pady=(10,0))
+        lang_combobox = ttk.Combobox(win, textvariable=lang_var, values=list(LANG_TEXT.keys()))
+        lang_combobox.pack(anchor="w", padx=10)
+
+        # Manage columns
+        columns_btn = ttk.Button(win, text=LANG_TEXT[lang_var.get()]["manage_columns"], command=self.manage_columns)
+        columns_btn.pack(pady=5)
+
+        # Save
+        save_btn = ttk.Button(win, text=LANG_TEXT[lang_var.get()]["save_settings"],
+            command=lambda:self.save_settings(win, excel_var, pdf_var, lang_var))
+        save_btn.pack(pady=20)
+        lang_var.trace_add("write", update_text)
+
+    def manage_columns(self):
+        win = tk.Toplevel(self)
+        win.title(self.t("manage_columns"))
+        win.geometry("400x400")
+
+        listbox = tk.Listbox(win)
+        listbox.pack(fill="both", expand=True, padx=10, pady=10)
+        # Show headers in the current language
+        headers_to_show = JAPANESE_COLUMNS if self.lang == "Japanese" else COLUMNS
+        for header in headers_to_show:
+            listbox.insert("end", header)
+
+        def add_column():
+            eng_name = simpledialog.askstring(self.t("add_column"), self.t("enter_column_name_english"))
+            if not eng_name:
+                messagebox.showerror(self.t("error"), self.t("invalid_column_name"))
+                return
+
+            jpn_name = simpledialog.askstring(self.t("add_column"), self.t("enter_column_name_japanese"))
+            if not jpn_name:
+                messagebox.showerror(self.t("error"), self.t("invalid_column_name"))
+                return
+
+            # Check if column already exists
+            if eng_name in COLUMNS or jpn_name in JAPANESE_COLUMNS:
+                messagebox.showerror(self.t("error"), self.t("column_exists").format(col=eng_name))
+                return
+
+            try:
+                COLUMNS.append(eng_name)
+                JAPANESE_COLUMNS.append(jpn_name)
+                self.df[eng_name] = ""
+
+                listbox.insert("end", eng_name)
+
+                save_columns({"english": COLUMNS, "japanese": JAPANESE_COLUMNS})
+                save_excel(self.df)
+
+                self.update_headers()
+                self.refresh_table(self.df)
+
+                messagebox.showinfo(self.t("success"), self.t("column_added").format(col=eng_name))
+            except Exception as e:
+                messagebox.showerror(self.t("error"), f"{self.t('add_failed')}: {e}")
+
+        def remove_column():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showerror(self.t("error"), self.t("no_selection"))
+                return
+
+            col = listbox.get(sel)
+            if col in ["Search No", "Reference model"]:
+                messagebox.showerror(self.t("error"), self.t("cannot_remove"))
+                return
+
+            try:
+                idx = COLUMNS.index(col)
+                del COLUMNS[idx]
+                del JAPANESE_COLUMNS[idx]
+                self.df.drop(columns=[col], inplace=True)
+
+                listbox.delete(sel)
+
+                save_columns({"english": COLUMNS, "japanese": JAPANESE_COLUMNS})
+                save_excel(self.df)
+
+                self.update_headers()
+                self.refresh_table(self.df)
+
+                messagebox.showinfo(self.t("success"), self.t("column_removed").format(col=col))
+            except Exception as e:
+                messagebox.showerror(self.t("error"), f"{self.t('remove_failed')}: {e}")
+
+        tk.Button(win, text=self.t("add_column"), command=add_column).pack(side="left", padx=10, pady=5)
+        tk.Button(win, text=self.t("remove_column"), command=remove_column).pack(side="right", padx=10, pady=5)
 
     def save_settings(self, win, excel_var, pdf_var, lang_var):
         global EXCEL_PATH, PDF_DIR
@@ -474,13 +772,11 @@ class DiagramApp(tk.Tk):
     def open_add_window(self):
         win = tk.Toplevel(self)
         win.title(self.t("add_title"))
-        win.geometry("550x820")
+        win.geometry("550x820") 
 
-        # Choose labels dynamically
-        labels = JAPANESE_COLUMNS if self.lang == "Japanese" else COLUMNS
-
+        labels = self.columns_data["japanese"] if self.lang=="Japanese" else self.columns_data["english"]
         fields = {}
-        for i, col in enumerate(COLUMNS):  # keep COLUMNS as keys for saving
+        for i, col in enumerate(COLUMNS):
             tk.Label(win, text=labels[i]).pack(anchor="w", padx=10)
             var = tk.StringVar()
             tk.Entry(win, textvariable=var).pack(fill="x", padx=10)
